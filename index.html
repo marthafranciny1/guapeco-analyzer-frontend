@@ -122,8 +122,8 @@
   <div class="card">
     <span class="settings-toggle" id="toggleSettings">⚙️ Configurar endereço da ferramenta / senha de acesso</span>
     <div id="settingsBox" style="display:none;">
-      <label for="endpoint">Endereço da função Netlify (ex: https://seu-site.netlify.app/.netlify/functions/analyze)</label>
-      <input type="text" id="endpoint" placeholder="https://seu-site.netlify.app/.netlify/functions/analyze" />
+      <label for="endpoint">Endereço base do site Netlify (ex: https://seu-site.netlify.app)</label>
+      <input type="text" id="endpoint" placeholder="https://seu-site.netlify.app" />
       <label for="passkey">Senha de acesso (a mesma configurada na Netlify)</label>
       <input type="password" id="passkey" placeholder="senha" />
       <button id="saveSettings" style="margin-bottom:8px;">Salvar</button>
@@ -217,10 +217,60 @@ function fileToBase64(file) {
   });
 }
 
+function getBaseUrl() {
+  let url = (localStorage.getItem('guapeco_endpoint') || '').trim();
+  url = url.replace(/\/+$/, '');
+  // Compatibilidade: se alguém salvou o endereço antigo terminando em
+  // /.netlify/functions/analyze, extrai só a base do site.
+  url = url.replace(/\/\.netlify\/functions\/analyze.*$/, '');
+  return url;
+}
+
+function makeJobId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'job-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+}
+
+async function pollStatus(base, jobId) {
+  const statusUrl = `${base}/.netlify/functions/status?jobId=${encodeURIComponent(jobId)}`;
+  const startedAt = Date.now();
+  const maxWaitMs = 5 * 60 * 1000; // 5 minutos
+
+  while (true) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+
+    if (Date.now() - startedAt > maxWaitMs) {
+      throw new Error('Tempo limite excedido (5 minutos). Tente novamente com um arquivo menor ou verifique os logs da função na Netlify.');
+    }
+
+    let resp;
+    try {
+      resp = await fetch(statusUrl);
+    } catch (e) {
+      continue; // tenta de novo na próxima rodada
+    }
+    if (!resp.ok) continue;
+
+    let data;
+    try {
+      data = await resp.json();
+    } catch (e) {
+      continue;
+    }
+
+    setStatus(`Analisando... (${elapsed}s, isso pode levar até 2 minutos)`);
+
+    if (data.status === 'done') return data;
+    if (data.status === 'error') throw new Error(data.error || 'Erro desconhecido ao analisar o contrato.');
+    // se status === 'pending', continua no loop
+  }
+}
+
 $('analyzeBtn').onclick = async () => {
-  const endpoint = localStorage.getItem('guapeco_endpoint');
+  const base = getBaseUrl();
   const passkey = localStorage.getItem('guapeco_passkey');
-  if (!endpoint) {
+  if (!base) {
     setStatus('Configure primeiro o endereço da ferramenta (⚙️ acima).', true);
     return;
   }
@@ -232,24 +282,24 @@ $('analyzeBtn').onclick = async () => {
 
   try {
     const base64 = await fileToBase64(selectedFile);
-    setStatus('Enviando para análise (isso pode levar 30-60 segundos)...');
+    const jobId = makeJobId();
+    setStatus('Enviando para análise...');
 
-    const resp = await fetch(endpoint, {
+    await fetch(`${base}/.netlify/functions/analyze-background`, {
       method: 'POST',
       headers: {
         'Content-Type': 'text/plain',
       },
       body: JSON.stringify({
+        jobId,
         docxBase64: base64,
         contractType: $('contractType').value,
         passKey: passkey || '',
       }),
     });
 
-    const data = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data.error || 'Erro desconhecido ao analisar o contrato.');
-    }
+    setStatus('Análise iniciada, aguardando resultado (isso pode levar até 2 minutos)...');
+    const data = await pollStatus(base, jobId);
 
     renderResults(data);
     setStatus('Análise concluída.');
