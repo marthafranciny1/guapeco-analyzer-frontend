@@ -237,12 +237,12 @@ $('analyzeBtn').onclick = async () => {
     const resp = await fetch(endpoint, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'x-guapeco-key': passkey || '',
+        'Content-Type': 'text/plain',
       },
       body: JSON.stringify({
         docxBase64: base64,
         contractType: $('contractType').value,
+        passKey: passkey || '',
       }),
     });
 
